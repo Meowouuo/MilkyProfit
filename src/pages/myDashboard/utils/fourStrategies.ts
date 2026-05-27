@@ -15,7 +15,8 @@
  *   - 右买左卖：买 BID / 卖 ASK（理论最优）
  */
 
-import type Calculator, { Ingredient, Product } from "@/calculator"
+import type { Ingredient, Product } from "@/calculator"
+import type Calculator from "@/calculator"
 import { getPriceOf } from "@/common/apis/game"
 import * as Format from "@/common/utils/format"
 
@@ -172,7 +173,7 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
 
   // 可计算性检查：
   //   如果 actionsPH 无效（≤0），返回全 0 的占位结果
-  const invalid = actionsPH <= 0 || !isFinite(actionsPH)
+  const invalid = actionsPH <= 0 || !Number.isFinite(actionsPH)
 
   return STRATEGIES.map(({ name, buyType, sellType }) => {
     if (invalid) {

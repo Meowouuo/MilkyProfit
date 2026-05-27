@@ -15,8 +15,9 @@
  * 最高利润策略用绿色高亮，方便快速识别最优方案。
  */
 
+import type { CalculatorWithStrategies, StrategyResult } from "../utils/fourStrategies"
 import type Calculator from "@/calculator"
-import type { StrategyResult, CalculatorWithStrategies } from "../utils/fourStrategies"
+import { ArrowDown, ArrowUp } from "@element-plus/icons-vue"
 import { calculateAllFourStrategies } from "../utils/fourStrategies"
 
 // =============================================
@@ -64,10 +65,10 @@ const strategyList = computed<CalculatorWithStrategies[]>(() => {
 
 /** 四种策略名称的国际化 key */
 const STRATEGY_LABELS: Record<string, string> = {
-  "左买左卖": t("左买左卖"),
-  "左买右卖": t("左买右卖"),
-  "右买右卖": t("右买右卖"),
-  "右买左卖": t("右买左卖")
+  左买左卖: t("左买左卖"),
+  左买右卖: t("左买右卖"),
+  右买右卖: t("右买右卖"),
+  右买左卖: t("右买左卖")
 }
 
 // #endregion
@@ -94,12 +95,11 @@ function toggleExpand() {
  * el-table 的 span-method 回调
  * 每个 Calculator 对应 4 行（四种策略），物品列和动作列合并显示
  *
- * @param row 当前行数据
  * @param column 当前列对象
  * @param rowIndex 行索引（扁平索引）
  * @returns [rowspan, colspan]
  */
-function tableSpanMethod({ row, column, rowIndex }: any): [number, number] {
+function tableSpanMethod({ column, rowIndex }: any): [number, number] {
   // 物品列和动作列需要合并：每 4 行合并为 1 个单元格
   if (column.property === "name" || column.property === "project") {
     if (rowIndex % 4 === 0) {
@@ -187,7 +187,7 @@ function tableRowClassName({ row }: { row: FlatRow }) {
         <el-button
           text
           size="small"
-          :icon="expanded ? 'ArrowUp' : 'ArrowDown'"
+          :icon="expanded ? ArrowUp : ArrowDown"
           @click="toggleExpand"
         >
           {{ expanded ? t('收起') : t('展开') }}

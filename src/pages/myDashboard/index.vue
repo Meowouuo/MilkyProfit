@@ -61,22 +61,22 @@ import { usePriceStatus } from "@/common/composables/usePriceStatus"
 import * as Format from "@/common/utils/format"
 
 // ————————————————————————————————————————————————————
-// 内部依赖：Pinia 状态管理
-// ————————————————————————————————————————————————————
-import { useFavoriteStore } from "@/pinia/stores/favorite"
-import { useGameStore } from "@/pinia/stores/game"
-import { usePlayerStore } from "@/pinia/stores/player"
-import { usePriceStore } from "@/pinia/stores/price"
-
-// ————————————————————————————————————————————————————
 // 内部依赖：子组件（复用 dashboard/components，不重复拷贝）
 // ————————————————————————————————————————————————————
 import ActionConfig from "@/pages/dashboard/components/ActionConfig.vue"
 import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
 import ActionPrice from "@/pages/dashboard/components/ActionPrice.vue"
 import GameInfo from "@/pages/dashboard/components/GameInfo.vue"
+
 import ManualPriceCard from "@/pages/dashboard/components/ManualPriceCard.vue"
 import PriceStatusSelect from "@/pages/dashboard/components/PriceStatusSelect.vue"
+// ————————————————————————————————————————————————————
+// 内部依赖：Pinia 状态管理
+// ————————————————————————————————————————————————————
+import { useFavoriteStore } from "@/pinia/stores/favorite"
+import { useGameStore } from "@/pinia/stores/game"
+import { usePlayerStore } from "@/pinia/stores/player"
+import { usePriceStore } from "@/pinia/stores/price"
 
 // ————————————————————————————————————————————————————
 // 内部依赖：本页面新增组件
@@ -111,12 +111,12 @@ const ldSearchFormRef = ref<FormInstance | null>(null)
  * 使用独立 key，避免与 dashboard 页面搜索状态冲突
  */
 const ldSearchData = useMemory("myDashboard-leaderboard-search-data", {
-  name: "",           // 物品名称关键字
-  project: "",        // 动作类型
-  profitRate: 10,     // 最低利润率（%）
+  name: "", // 物品名称关键字
+  project: "", // 动作类型
+  profitRate: 10, // 最低利润率（%）
   maxItemLevel: undefined, // 最大物品等级限制
   banEquipment: true, // 是否排除装备
-  banCharm: false     // 是否排除护符
+  banCharm: false // 是否排除护符
 })
 
 /**
@@ -213,8 +213,8 @@ const frSearchFormRef = ref<FormInstance | null>(null)
  * 使用独立 key，避免与 dashboard 页面搜索状态冲突
  */
 const frSearchData = useMemory("myDashboard-favorite-search-data", {
-  name: "",       // 物品名称关键字
-  project: "",    // 动作类型
+  name: "", // 物品名称关键字
+  project: "", // 动作类型
   banCharm: false // 是否排除护符
 })
 
@@ -413,7 +413,6 @@ const onPriceStatusChange = usePriceStatus("myDashboard-price-status")
 <template>
   <!-- 我的看板页面根容器 -->
   <div class="app-container">
-
     <!-- =============================================
       顶部工具栏：游戏信息 + 动作配置 + 价格状态 + 税率开关
     ============================================= -->
@@ -441,7 +440,6 @@ const onPriceStatusChange = usePriceStatus("myDashboard-price-status")
       主体内容区：利润排行 + 手动价格卡片 + 收藏夹
     ============================================= -->
     <el-row :gutter="20" class="row">
-
       <!-- ——————————————————————————————————————
         利润排行榜卡片（Leaderboard）
       —————————————————————————————————————————— -->
@@ -651,12 +649,6 @@ const onPriceStatusChange = usePriceStatus("myDashboard-price-status")
                 </template>
               </el-table-column>
             </el-table>
-
-            <!-- ——————————————————————————————————————
-              四向策略对比面板（本页面独有功能）
-              当排行榜有数据时自动展示四种买卖策略的利润对比
-            —————————————————————————————————————————— -->
-            <StrategyCompare :data="leaderboardData" />
           </template>
 
           <!-- 排行榜分页 -->
@@ -675,6 +667,14 @@ const onPriceStatusChange = usePriceStatus("myDashboard-price-status")
             </div>
           </template>
         </el-card>
+      </el-col>
+
+      <!-- ——————————————————————————————————————
+        四向策略对比面板（独立卡片，位于排行榜与收藏夹之间）
+        当排行榜有数据时自动展示四种买卖策略的利润对比
+      —————————————————————————————————————————— -->
+      <el-col :xs="24" :sm="24" :md="24" :lg="24" :xl="16">
+        <StrategyCompare :data="leaderboardData" />
       </el-col>
 
       <!-- ——————————————————————————————————————
