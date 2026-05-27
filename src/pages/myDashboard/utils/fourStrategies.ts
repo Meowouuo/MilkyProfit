@@ -18,6 +18,7 @@
 import type { Product } from "@/calculator"
 import type Calculator from "@/calculator"
 import * as Format from "@/common/utils/format"
+import { COIN_HRID } from "@/pinia/stores/game"
 
 // =============================================
 // #region 类型定义
@@ -140,12 +141,14 @@ function calcCost(cal: Calculator, priceType: PriceType): number {
  * @param priceType 使用的价格类型（ask 或 bid）
  * @returns 单次成功行动的总收入（税前）
  */
-function calcIncome(cal: Calculator, priceType: PriceType): number {
+function calcIncome(cal: Calculator, priceType: PriceType, sellTaxFactor: number): number {
   const pricedList = cal.handlePrice(cal.productList, cal.productPriceConfigList, priceType)
   return pricedList.reduce((acc, item) => {
     if (item.price <= 0) return acc
     const rate = (item as Product).rate ?? 1
-    return acc + item.count * rate * item.price
+    // 硬币不计税（与 Calculator.income 逻辑一致：先除后乘）
+    const coinDivisor = (item as Product).hrid === COIN_HRID ? sellTaxFactor : 1
+    return acc + item.count * rate * item.price / coinDivisor
   }, 0)
 }
 
@@ -169,24 +172,32 @@ function calcIncome(cal: Calculator, priceType: PriceType): number {
  */
 export function calculateFourStrategies(calculator: Calculator): StrategyResult[] {
   /**
-   * 核心思路（与 Calculator.run() 一致——复用现有算法，仅切换价格类型）：
+   * 计算策略：
    *
    *   单步动作：
-   *     costPH = Σ原料.count × price × consumePH
-   *     incomePH = Σ产物.count × rate × price × gainPH × sellTaxFactor
+   *     直接用 handlePrice(..., buyType/sellType) 重新计算成本与收入。
    *
    *   多步动作（WorkflowCalculator）：
-   *     遍历每个子计算器的 ingredientList / productList，
-   *     分别按当前的 buyType / sellType 查找价格，
-   *     再乘以各子计算器的频率参数和 workMultiplier 倍率后累加。
-   *     —— 这与 WorkflowCalculator.run() 中
-   *        Σ resultList.costPH × workMultiplier 的算法一致。
+   *     以 resultList 中已算好的 "左买右卖"（ask 原料 / bid 产物）值为基准，
+   *     该基准与原始计算器 100% 一致（可验算）。
+   *     其他三种策略 = 基准值 + 价格 delta（bid⇔ask 差异）。
+   *
+   *     这样避免了独立重算过程中任何细微的缓存/副作用差异。
    */
 
   const isWorkflow = calculator.className === "WorkflowCalculator"
   const actionsPH = calculator.actionsPH
   const sellTaxFactor = calculator.sellTaxFactor
   const invalid = actionsPH <= 0 || !Number.isFinite(actionsPH)
+
+  // ——— 多步动作：预先从 resultList 提取基准值（仅 "左买右卖" 策略，即 ask 买 bid 卖） ———
+  // 每个子计算器在构造函数中已被配置了 immutable 价格，
+  // resultList 中的 costPH / incomePH 即为 "左买右卖" 策略的正确结果。
+  let baseResultList: any[] | null = null
+  if (isWorkflow && !invalid) {
+    const rawResultList = (calculator as any).resultList
+    baseResultList = Array.isArray(rawResultList) ? rawResultList.flat() as any[] : null
+  }
 
   return STRATEGIES.map(({ name, buyType, sellType }) => {
     if (invalid) {
@@ -196,35 +207,57 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
     let costPH: number
     let incomePH: number
 
-    if (isWorkflow) {
-      // ——— 多步动作：遍历所有子计算器，逐个累加 ———
-      // 子计算器的 handlePrice() 已内置了中间步骤 immutable:true/price:0 的配置，
-      // 确保只有第一步的原料和最后一步的产物使用真实市场价格。
+    if (isWorkflow && baseResultList) {
+      // ——— 多步动作：基准 + delta 策略 ———
       const cals: Calculator[] = (calculator as any).calculatorList.flat()
-      const multipliers: number[] = (calculator as any).workMultiplier.flat()
+      // 提取每个子步骤的 workMultiplier（resultList[i].workMultiplier）
+      const stepMults: number[] = baseResultList.map((r: any) => r.workMultiplier as number)
 
       costPH = 0
       incomePH = 0
 
       for (let i = 0; i < cals.length; i++) {
         const cal = cals[i]
-        const mult = multipliers[i] || 0
+        const ri = baseResultList[i]
+        const mult = stepMults[i] || 0
+        if (mult <= 0 || !ri) continue
 
-        if (mult <= 0) continue
+        // 从 resultList 反推 "左买右卖" 策略下的单次动作成本与税前收入
+        const origCostPerAction = ri.consumePH > 0
+          ? ri.costPH / ri.consumePH
+          : 0
+        const origIncomePerActionPreTax = ri.gainPH > 0
+          ? ri.incomePH / ri.gainPH / sellTaxFactor
+          : 0
 
-        // 子计算器的原料成本（单次动作），乘以该阶段频率和倍率
-        costPH += calcCost(cal, buyType) * cal.consumePH * mult
+        let adjustedCost = origCostPerAction
+        let adjustedIncome = origIncomePerActionPreTax
 
-        // 子计算器的产物收入（单次成功动作），乘以增益频率、倍率和税率
-        incomePH += calcIncome(cal, sellType) * cal.gainPH * mult * sellTaxFactor
+        // 当买入类型不是 "ask" 时，计算成本 delta
+        if (buyType !== "ask") {
+          const askCost = calcCost(cal, "ask")
+          const bidCost = calcCost(cal, "bid")
+          adjustedCost = origCostPerAction + (bidCost - askCost)
+        }
+
+        // 当卖出类型不是 "bid" 时，计算收入 delta
+        if (sellType !== "bid") {
+          const bidIncome = calcIncome(cal, "bid", sellTaxFactor)
+          const askIncome = calcIncome(cal, "ask", sellTaxFactor)
+          adjustedIncome = origIncomePerActionPreTax + (askIncome - bidIncome)
+        }
+
+        // 累积小时值
+        costPH += adjustedCost * cal.consumePH * mult
+        incomePH += adjustedIncome * cal.gainPH * mult * sellTaxFactor
       }
     } else {
-      // ——— 单步动作：直接取原料/产物列表 ———
+      // ——— 单步动作：直接计算 ———
       const consumePH = calculator.consumePH
       const gainPH = calculator.gainPH
 
       costPH = calcCost(calculator, buyType) * consumePH
-      incomePH = calcIncome(calculator, sellType) * gainPH * sellTaxFactor
+      incomePH = calcIncome(calculator, sellType, sellTaxFactor) * gainPH * sellTaxFactor
     }
 
     // 利润/h = 收入/h − 成本/h
