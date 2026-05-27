@@ -17,7 +17,7 @@
 
 import type { Ingredient, Product } from "@/calculator"
 import type Calculator from "@/calculator"
-import { getPriceOf } from "@/common/apis/game"
+import { getUsedPriceOf } from "@/common/apis/price"
 import * as Format from "@/common/utils/format"
 
 // =============================================
@@ -115,8 +115,8 @@ const MAX_PROFIT_RATE = 999
  */
 function calcCost(ingredients: Ingredient[], priceType: PriceType): number {
   return ingredients.reduce((acc, item) => {
-    const price = getPriceOf(item.hrid, item.level)[priceType]
-    // 价格无效（-1）时跳过该项
+    const price = getUsedPriceOf(item.hrid, item.level ?? 0, priceType) ?? -1
+    // 价格无效（-1 或 undefined）时跳过该项
     return acc + (price > 0 ? item.count * price : 0)
   }, 0)
 }
@@ -134,7 +134,7 @@ function calcCost(ingredients: Ingredient[], priceType: PriceType): number {
  */
 function calcIncome(products: Product[], priceType: PriceType): number {
   return products.reduce((acc, item) => {
-    const price = getPriceOf(item.hrid, item.level)[priceType]
+    const price = getUsedPriceOf(item.hrid, item.level ?? 0, priceType) ?? -1
     // 价格无效时跳过该项
     if (price <= 0) return acc
     const rate = item.rate ?? 1
@@ -161,59 +161,24 @@ function calcIncome(products: Product[], priceType: PriceType): number {
  * @returns 四种策略的结果数组（顺序：左买左卖 → 左买右卖 → 右买右卖 → 右买左卖）
  */
 export function calculateFourStrategies(calculator: Calculator): StrategyResult[] {
-  // 检测是否为 WorkflowCalculator（多步动作）
-  const isWorkflow = (calculator as any).className === "WorkflowCalculator"
+  /**
+   * 核心思路（与 Calculator.run() 一致——复用现有算法，仅切换价格类型）：
+   *
+   *   单步动作：
+   *     costPH = Σ原料.count × price × consumePH
+   *     incomePH = Σ产物.count × rate × price × gainPH × sellTaxFactor
+   *
+   *   多步动作（WorkflowCalculator）：
+   *     遍历每个子计算器的 ingredientList / productList，
+   *     分别按当前的 buyType / sellType 查找价格，
+   *     再乘以各子计算器的频率参数和 workMultiplier 倍率后累加。
+   *     —— 这与 WorkflowCalculator.run() 中
+   *        Σ resultList.costPH × workMultiplier 的算法一致。
+   */
 
-  let ingredientList: Ingredient[]
-  let productList: Product[]
-
-  if (isWorkflow) {
-    const wf = calculator as any
-
-    // 从第一个子计算器提取原始原料列表，按工作流倍率缩放
-    const firstCal = wf.calculatorList[0]
-    const firstMultiplier = wf.workMultiplier.flat()[0]
-    const rawIngredientList: Ingredient[] = Array.isArray(firstCal)
-      ? firstCal[0].ingredientList
-      : firstCal.ingredientList
-    ingredientList = rawIngredientList.map(item => ({
-      ...item,
-      count: item.count * firstMultiplier
-    }))
-
-    // 从最后一个子计算器提取原始产物列表，按工作流倍率缩放
-    const lastCal = wf.calculatorList[wf.calculatorList.length - 1]
-    const lastMultiplierArr = wf.workMultiplier[wf.workMultiplier.length - 1]
-    const lastMultipliers: number[] = Array.isArray(lastMultiplierArr) ? lastMultiplierArr : [lastMultiplierArr]
-
-    if (Array.isArray(lastCal)) {
-      // 最后阶段为数组时（多个产物分支），合并所有产物列表
-      productList = lastCal.flatMap((c: Calculator, i: number) => {
-        return (c as any).productList.map((item: Product) => ({
-          ...item,
-          count: item.count * lastMultipliers[i]
-        }))
-      })
-    } else {
-      productList = (lastCal as Calculator).productList.map((item: Product) => ({
-        ...item,
-        count: item.count * lastMultipliers[0]
-      }))
-    }
-  } else {
-    // 单步动作：直接使用 Calculator 的 ingredientList / productList
-    ingredientList = calculator.ingredientList
-    productList = calculator.productList
-  }
-
-  // 从 calculator 读取不变参数（WorkflowCalculator 继承自基类，值正确）
+  const isWorkflow = calculator.className === "WorkflowCalculator"
   const actionsPH = calculator.actionsPH
-  const consumePH = calculator.consumePH
-  const gainPH = calculator.gainPH
   const sellTaxFactor = calculator.sellTaxFactor
-
-  // 可计算性检查：
-  //   如果 actionsPH 无效（≤0），返回全 0 的占位结果
   const invalid = actionsPH <= 0 || !Number.isFinite(actionsPH)
 
   return STRATEGIES.map(({ name, buyType, sellType }) => {
@@ -221,15 +186,42 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
       return makeEmptyResult(name, buyType, sellType)
     }
 
-    // 计算单次成本与收入
-    const cost = calcCost(ingredientList, buyType)
-    const income = calcIncome(productList, sellType)
+    let costPH: number
+    let incomePH: number
 
-    // 套用小时频率：
-    //   costPH → 成本/h = 成本/次 × consumePH
-    //   incomePH → 收入/h = 收入/次 × 产出增益/h × gainPH × 税率因子
-    const costPH = cost * consumePH
-    const incomePH = income * gainPH * sellTaxFactor
+    if (isWorkflow) {
+      // ——— 多步动作：遍历所有子计算器，逐个累加 ———
+      const cals: Calculator[] = (calculator as any).calculatorList.flat()
+      const multipliers: number[] = (calculator as any).workMultiplier.flat()
+
+      costPH = 0
+      incomePH = 0
+
+      for (let i = 0; i < cals.length; i++) {
+        const cal = cals[i]
+        const mult = multipliers[i] || 0
+
+        if (mult <= 0) continue
+
+        // 子计算器的原料成本（单次动作），乘以该阶段频率和倍率
+        const calCost = calcCost(cal.ingredientList, buyType)
+        costPH += calCost * cal.consumePH * mult
+
+        // 子计算器的产物收入（单次成功动作），乘以增益频率、倍率和税率
+        const calIncome = calcIncome(cal.productList, sellType)
+        incomePH += calIncome * cal.gainPH * mult * sellTaxFactor
+      }
+    } else {
+      // ——— 单步动作：直接取原料/产物列表 ———
+      const consumePH = calculator.consumePH
+      const gainPH = calculator.gainPH
+
+      const cost = calcCost(calculator.ingredientList, buyType)
+      const income = calcIncome(calculator.productList, sellType)
+
+      costPH = cost * consumePH
+      incomePH = income * gainPH * sellTaxFactor
+    }
 
     // 利润/h = 收入/h − 成本/h
     const profitPH = incomePH - costPH
