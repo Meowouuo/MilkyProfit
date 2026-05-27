@@ -17,7 +17,8 @@
 
 import type { CalculatorWithStrategies, StrategyResult } from "../utils/fourStrategies"
 import type Calculator from "@/calculator"
-import { ArrowDown, ArrowUp } from "@element-plus/icons-vue"
+import { ArrowDown, ArrowUp, Search } from "@element-plus/icons-vue"
+import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
 import { calculateAllFourStrategies } from "../utils/fourStrategies"
 
 // =============================================
@@ -88,6 +89,27 @@ function toggleExpand() {
 // #endregion
 
 // =============================================
+// #region 详情弹窗
+// =============================================
+
+/** 详情弹窗可见性 */
+const detailVisible = ref(false)
+
+/** 当前选中的 Calculator（用于详情展示） */
+const currentDetailRow = ref<Calculator>()
+
+/**
+ * 打开详情弹窗
+ * @param calc 对应的 Calculator 实例
+ */
+function showDetail(calc: Calculator) {
+  currentDetailRow.value = calc
+  detailVisible.value = true
+}
+
+// #endregion
+
+// =============================================
 // #region 表格行合并逻辑
 // =============================================
 
@@ -131,6 +153,8 @@ interface FlatRow {
   strategy: StrategyResult
   /** 是否为该组的最优策略 */
   isBest: boolean
+  /** 对应的 Calculator 实例（用于详情展示） */
+  calculator: Calculator
 }
 
 const flatTableData = computed<FlatRow[]>(() => {
@@ -145,7 +169,8 @@ const flatTableData = computed<FlatRow[]>(() => {
         project: item.project,
         strategyName: strategy.name,
         strategy,
-        isBest: strategy.profitPD === bestPD && bestPD > 0
+        isBest: strategy.profitPD === bestPD && bestPD > 0,
+        calculator: item.calculator
       })
     }
   }
@@ -278,6 +303,25 @@ function tableRowClassName({ row }: { row: FlatRow }) {
             {{ row.strategy.profitRateFormat }}
           </template>
         </el-table-column>
+
+        <!-- 详情列 -->
+        <el-table-column
+          :label="t('详情')"
+          width="80"
+          align="center"
+          fixed="right"
+        >
+          <template #default="{ row }">
+            <el-link
+              type="primary"
+              :icon="Search"
+              :underline="false"
+              @click="showDetail(row.calculator)"
+            >
+              {{ t('详情') }}
+            </el-link>
+          </template>
+        </el-table-column>
       </el-table>
 
       <!-- 图例说明 -->
@@ -290,6 +334,9 @@ function tableRowClassName({ row }: { row: FlatRow }) {
         </span>
       </div>
     </div>
+
+    <!-- 详情弹窗：复用原版 ActionDetail 组件 -->
+    <ActionDetail v-model="detailVisible" :data="currentDetailRow" />
   </el-card>
 </template>
 
