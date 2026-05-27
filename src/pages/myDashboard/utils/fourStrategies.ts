@@ -1,0 +1,262 @@
+/**
+ * @file fourStrategies.ts
+ * @description 四种买卖策略利润计算工具
+ *
+ * 基于 Calculator 已计算的结果，重新以不同的买入/卖出价格组合
+ * 计算四种策略的利润数据。
+ *
+ * 策略对照：
+ *   左价（ASK）= 卖方挂单价 → 买入成本
+ *   右价（BID）= 买方挂单价 → 卖出收入
+ *
+ *   - 左买左卖：买 ASK / 卖 ASK
+ *   - 左买右卖：买 ASK / 卖 BID（当前默认策略）
+ *   - 右买右卖：买 BID / 卖 BID
+ *   - 右买左卖：买 BID / 卖 ASK（理论最优）
+ */
+
+import type Calculator, { Ingredient, Product } from "@/calculator"
+import { getPriceOf } from "@/common/apis/game"
+import * as Format from "@/common/utils/format"
+
+// =============================================
+// #region 类型定义
+// =============================================
+
+/** 策略名称字面量 */
+export type StrategyName = "左买左卖" | "左买右卖" | "右买右卖" | "右买左卖"
+
+/** 价格类型（对应市场左侧 ask 或右侧 bid） */
+export type PriceType = "ask" | "bid"
+
+/**
+ * 策略配置：名称 + 买卖价格类型
+ */
+export interface StrategyConfig {
+  name: StrategyName
+  /** 买入使用的价格类型（ask 或 bid） */
+  buyType: PriceType
+  /** 卖出使用的价格类型（ask 或 bid） */
+  sellType: PriceType
+}
+
+/**
+ * 单个策略的计算结果
+ */
+export interface StrategyResult {
+  /** 策略名称 */
+  name: StrategyName
+  /** 买入价格类型 */
+  buyType: PriceType
+  /** 卖出价格类型 */
+  sellType: PriceType
+  /** 日利润（数值） */
+  profitPD: number
+  /** 小时利润（数值） */
+  profitPH: number
+  /** 单次利润（数值） */
+  profitPP: number
+  /** 利润率（小数，如 0.15 表示 15%） */
+  profitRate: number
+  /** 格式化后的日利润 */
+  profitPDFormat: string
+  /** 格式化后的小时利润 */
+  profitPHFormat: string
+  /** 格式化后的单次利润 */
+  profitPPFormat: string
+  /** 格式化后的利润率 */
+  profitRateFormat: string
+}
+
+/** Calculator + 四种策略结果的组合 */
+export interface CalculatorWithStrategies {
+  /** 原始 Calculator 实例 */
+  calculator: Calculator
+  /** 物品名称 */
+  name: string
+  /** 动作类型 */
+  project: string
+  /** 四种策略计算结果 */
+  strategies: StrategyResult[]
+}
+
+// #endregion
+
+// =============================================
+// #region 常量
+// =============================================
+
+/** 四种策略的固定配置 */
+const STRATEGIES: StrategyConfig[] = [
+  { name: "左买左卖", buyType: "ask", sellType: "ask" },
+  { name: "左买右卖", buyType: "ask", sellType: "bid" },
+  { name: "右买右卖", buyType: "bid", sellType: "bid" },
+  { name: "右买左卖", buyType: "bid", sellType: "ask" }
+]
+
+/**
+ * 利润率上限（避免成本为 0 时出现 Infinity）
+ * 实际显示时通过 Format.percent 转换
+ */
+const MAX_PROFIT_RATE = 999
+
+// #endregion
+
+// =============================================
+// #region 辅助函数
+// =============================================
+
+/**
+ * 计算原料总成本（单次动作）
+ * @param ingredients 原料列表
+ * @param priceType 使用的价格类型（ask 或 bid）
+ * @returns 单次动作的总原料成本
+ */
+function calcCost(ingredients: Ingredient[], priceType: PriceType): number {
+  return ingredients.reduce((acc, item) => {
+    const price = getPriceOf(item.hrid, item.level)[priceType]
+    // 价格无效（-1）时跳过该项
+    return acc + (price > 0 ? item.count * price : 0)
+  }, 0)
+}
+
+/**
+ * 计算产物总收入（单次成功行动）
+ *
+ * 税率处理说明：
+ *   产物在 Calculator 中统一走 sellTaxFactor 扣税，
+ *   此处收入的税后扣减在 calcStrategies 中统一乘以 sellTaxFactor。
+ *
+ * @param products 产物列表
+ * @param priceType 使用的价格类型（ask 或 bid）
+ * @returns 单次成功行动的总收入（税前）
+ */
+function calcIncome(products: Product[], priceType: PriceType): number {
+  return products.reduce((acc, item) => {
+    const price = getPriceOf(item.hrid, item.level)[priceType]
+    // 价格无效时跳过该项
+    if (price <= 0) return acc
+    const rate = item.rate ?? 1
+    return acc + item.count * rate * price
+  }, 0)
+}
+
+// #endregion
+
+// =============================================
+// #region 核心导出函数
+// =============================================
+
+/**
+ * 计算单个 Calculator 的四种策略利润
+ *
+ * 核心思路：
+ *   1. 从 calculator.ingredientList 获取原料数量（不受 handlePrice 影响）
+ *   2. 从 calculator.productList 获取产物数量
+ *   3. 对每种策略，用不同的 ask/bid 价格组合重新计算成本与收入
+ *   4. 其余参数（频率、增益、税率）与 Calculator 计算结果保持一致
+ *
+ * @param calculator 已执行 run() 的 Calculator 实例
+ * @returns 四种策略的结果数组（顺序：左买左卖 → 左买右卖 → 右买右卖 → 右买左卖）
+ */
+export function calculateFourStrategies(calculator: Calculator): StrategyResult[] {
+  // 获取原料列表和产物列表（使用原始数据，不经过 handlePrice）
+  const ingredientList = calculator.ingredientList
+  const productList = calculator.productList
+
+  // 从 calculator 读取不变参数
+  const actionsPH = calculator.actionsPH
+  const consumePH = calculator.consumePH
+  const gainPH = calculator.gainPH
+  const sellTaxFactor = calculator.sellTaxFactor
+
+  // 可计算性检查：
+  //   如果 actionsPH 无效（≤0），返回全 0 的占位结果
+  const invalid = actionsPH <= 0 || !isFinite(actionsPH)
+
+  return STRATEGIES.map(({ name, buyType, sellType }) => {
+    if (invalid) {
+      return makeEmptyResult(name, buyType, sellType)
+    }
+
+    // 计算单次成本与收入
+    const cost = calcCost(ingredientList, buyType)
+    const income = calcIncome(productList, sellType)
+
+    // 套用小时频率：
+    //   costPH → 成本/h = 成本/次 × consumePH
+    //   incomePH → 收入/h = 收入/次 × 产出增益/h × gainPH × 税率因子
+    const costPH = cost * consumePH
+    const incomePH = income * gainPH * sellTaxFactor
+
+    // 利润/h = 收入/h − 成本/h
+    const profitPH = incomePH - costPH
+
+    // 利润/天 = 利润/h × 24
+    const profitPD = profitPH * 24
+
+    // 利润/次 = 利润/h ÷ 每小时动作次数
+    const profitPP = profitPH / actionsPH
+
+    // 利润率（按小时成本算）
+    const profitRate = costPH > 0 ? profitPH / costPH : MAX_PROFIT_RATE
+
+    return {
+      name,
+      buyType,
+      sellType,
+      profitPD,
+      profitPH,
+      profitPP,
+      profitRate,
+      profitPDFormat: Format.money(profitPD),
+      profitPHFormat: Format.money(profitPH),
+      profitPPFormat: Format.money(profitPP),
+      profitRateFormat: Format.percent(Math.min(profitRate, MAX_PROFIT_RATE))
+    }
+  })
+}
+
+/**
+ * 对多个 Calculator 批量计算四种策略
+ * @param calculatorList Calculator 列表（已 run）
+ * @returns 带策略结果的 CalculatorWithStrategies 数组
+ */
+export function calculateAllFourStrategies(calculatorList: Calculator[]): CalculatorWithStrategies[] {
+  return calculatorList.map((calculator) => {
+    const strategies = calculateFourStrategies(calculator)
+    return {
+      calculator,
+      name: calculator.result?.name ?? "",
+      project: calculator.project ?? "",
+      strategies
+    }
+  })
+}
+
+// #endregion
+
+// =============================================
+// #region   辅助函数
+// =============================================
+
+/**
+ * 创建全零的占位策略结果（用于无法计算时）
+ */
+function makeEmptyResult(name: StrategyName, buyType: PriceType, sellType: PriceType): StrategyResult {
+  return {
+    name,
+    buyType,
+    sellType,
+    profitPD: 0,
+    profitPH: 0,
+    profitPP: 0,
+    profitRate: 0,
+    profitPDFormat: "0",
+    profitPHFormat: "0",
+    profitPPFormat: "0",
+    profitRateFormat: "0%"
+  }
+}
+
+// #endregion

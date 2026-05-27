@@ -6,6 +6,11 @@
  * 本页面参照首页（/dashboard）设计，展示利润排行和收藏夹两个核心模块。
  * 与 dashboard 功能保持一致，可在此基础上做个性化扩展。
  *
+ * 本页面独有功能：
+ *   - 四向策略对比：在利润排行表格下方展示四种买卖组合（左买左卖、
+ *     左买右卖、右买右卖、右买左卖）的日利润、小时利润、次利润、利润率，
+ *     并自动高亮日利润最高的最优策略。详见 StrategyCompare.vue。
+ *
  * 与 dashboard 的主要差异：
  *   - 所有 useMemory / usePagination 的 key 均改为 "myDashboard-" 前缀，
  *     确保两个页面的分页、搜索条件、税率开关等持久化状态相互独立。
@@ -72,6 +77,11 @@ import ActionPrice from "@/pages/dashboard/components/ActionPrice.vue"
 import GameInfo from "@/pages/dashboard/components/GameInfo.vue"
 import ManualPriceCard from "@/pages/dashboard/components/ManualPriceCard.vue"
 import PriceStatusSelect from "@/pages/dashboard/components/PriceStatusSelect.vue"
+
+// ————————————————————————————————————————————————————
+// 内部依赖：本页面新增组件
+// ————————————————————————————————————————————————————
+import StrategyCompare from "./components/StrategyCompare.vue"
 
 // =============================================
 // #region 利润排行模块（Leaderboard）
@@ -641,6 +651,12 @@ const onPriceStatusChange = usePriceStatus("myDashboard-price-status")
                 </template>
               </el-table-column>
             </el-table>
+
+            <!-- ——————————————————————————————————————
+              四向策略对比面板（本页面独有功能）
+              当排行榜有数据时自动展示四种买卖策略的利润对比
+            —————————————————————————————————————————— -->
+            <StrategyCompare :data="leaderboardData" />
           </template>
 
           <!-- 排行榜分页 -->
