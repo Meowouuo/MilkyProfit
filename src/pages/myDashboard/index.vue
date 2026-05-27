@@ -142,8 +142,10 @@ const getLeaderboardData = debounce(() => {
     sort: sortLD.value
   }).then((data) => {
     // 同步更新总条数与列表数据
+    // 使用扩展运算符创建新数组引用，确保手动价格变化时触发响应式更新
+    // （即使 API 返回同一份缓存数据，Vue 也能检测到引用变化并重新计算）
     paginationDataLD.total = data.total
-    leaderboardData.value = data.list
+    leaderboardData.value = [...data.list]
   }).catch((e) => {
     console.error(e)
     leaderboardData.value = []
@@ -231,7 +233,8 @@ function getFavoriteData() {
     ...frSearchData.value
   }).then((data) => {
     paginationDataMN.total = data.total
-    favoriteData.value = data.list
+    // 使用扩展运算符创建新数组引用，确保手动价格变化时触发响应式更新
+    favoriteData.value = [...data.list]
   }).catch(() => {
     favoriteData.value = []
   }).finally(() => {
