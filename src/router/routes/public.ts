@@ -55,6 +55,24 @@ export const publicRoutes: RouteRecordRaw[] = [
     ]
   },
   {
+    // 我的看板：参照首页 /dashboard 新增，所有状态 key 使用 "myDashboard-" 前缀独立存储
+    path: "/",
+    component: Layouts,
+    redirect: "/myDashboard",
+    children: [
+      {
+        path: "myDashboard",
+        component: () => import("@/pages/myDashboard/index.vue"),
+        name: "MyDashboard",
+        meta: {
+          title: t("我的看板"),
+          svgIcon: "dashboard",
+          affix: false
+        }
+      }
+    ]
+  },
+  {
     path: "/",
     component: Layouts,
     redirect: "/enhancer",
