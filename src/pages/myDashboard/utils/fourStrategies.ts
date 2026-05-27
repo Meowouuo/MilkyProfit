@@ -15,9 +15,8 @@
  *   - 右买左卖：买 BID / 卖 ASK（理论最优）
  */
 
-import type { Ingredient, Product } from "@/calculator"
+import type { Product } from "@/calculator"
 import type Calculator from "@/calculator"
-import { getUsedPriceOf } from "@/common/apis/price"
 import * as Format from "@/common/utils/format"
 
 // =============================================
@@ -109,36 +108,44 @@ const MAX_PROFIT_RATE = 999
 
 /**
  * 计算原料总成本（单次动作）
- * @param ingredients 原料列表
+ *
+ * 使用 Calculator.handlePrice() 以确保：
+ * - 尊重子计算器的 immutable 价格配置（多步动作中，中间步骤原料价格为 0）
+ * - 正确区分 ask / bid 手动价格
+ *
+ * @param cal 已 run() 的子计算器实例
  * @param priceType 使用的价格类型（ask 或 bid）
  * @returns 单次动作的总原料成本
  */
-function calcCost(ingredients: Ingredient[], priceType: PriceType): number {
-  return ingredients.reduce((acc, item) => {
-    const price = getUsedPriceOf(item.hrid, item.level ?? 0, priceType) ?? -1
-    // 价格无效（-1 或 undefined）时跳过该项
-    return acc + (price > 0 ? item.count * price : 0)
+function calcCost(cal: Calculator, priceType: PriceType): number {
+  const pricedList = cal.handlePrice(cal.ingredientList, cal.ingredientPriceConfigList, priceType)
+  return pricedList.reduce((acc, item) => {
+    // 价格无效时跳过该项
+    return acc + (item.price > 0 ? item.count * item.price : 0)
   }, 0)
 }
 
 /**
- * 计算产物总收入（单次成功行动）
+ * 计算产物总收入（单次成功行动，税前）
+ *
+ * 使用 Calculator.handlePrice() 以确保：
+ * - 尊重子计算器的 immutable 价格配置（多步动作中，中间步骤产物价格为 0）
+ * - 正确区分 ask / bid 手动价格
  *
  * 税率处理说明：
  *   产物在 Calculator 中统一走 sellTaxFactor 扣税，
- *   此处收入的税后扣减在 calcStrategies 中统一乘以 sellTaxFactor。
+ *   此处收入为税前值，税后扣减在 calculateFourStrategies 调用处统一乘以 sellTaxFactor。
  *
- * @param products 产物列表
+ * @param cal 已 run() 的子计算器实例
  * @param priceType 使用的价格类型（ask 或 bid）
  * @returns 单次成功行动的总收入（税前）
  */
-function calcIncome(products: Product[], priceType: PriceType): number {
-  return products.reduce((acc, item) => {
-    const price = getUsedPriceOf(item.hrid, item.level ?? 0, priceType) ?? -1
-    // 价格无效时跳过该项
-    if (price <= 0) return acc
-    const rate = item.rate ?? 1
-    return acc + item.count * rate * price
+function calcIncome(cal: Calculator, priceType: PriceType): number {
+  const pricedList = cal.handlePrice(cal.productList, cal.productPriceConfigList, priceType)
+  return pricedList.reduce((acc, item) => {
+    if (item.price <= 0) return acc
+    const rate = (item as Product).rate ?? 1
+    return acc + item.count * rate * item.price
   }, 0)
 }
 
@@ -191,6 +198,8 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
 
     if (isWorkflow) {
       // ——— 多步动作：遍历所有子计算器，逐个累加 ———
+      // 子计算器的 handlePrice() 已内置了中间步骤 immutable:true/price:0 的配置，
+      // 确保只有第一步的原料和最后一步的产物使用真实市场价格。
       const cals: Calculator[] = (calculator as any).calculatorList.flat()
       const multipliers: number[] = (calculator as any).workMultiplier.flat()
 
@@ -204,23 +213,18 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
         if (mult <= 0) continue
 
         // 子计算器的原料成本（单次动作），乘以该阶段频率和倍率
-        const calCost = calcCost(cal.ingredientList, buyType)
-        costPH += calCost * cal.consumePH * mult
+        costPH += calcCost(cal, buyType) * cal.consumePH * mult
 
         // 子计算器的产物收入（单次成功动作），乘以增益频率、倍率和税率
-        const calIncome = calcIncome(cal.productList, sellType)
-        incomePH += calIncome * cal.gainPH * mult * sellTaxFactor
+        incomePH += calcIncome(cal, sellType) * cal.gainPH * mult * sellTaxFactor
       }
     } else {
       // ——— 单步动作：直接取原料/产物列表 ———
       const consumePH = calculator.consumePH
       const gainPH = calculator.gainPH
 
-      const cost = calcCost(calculator.ingredientList, buyType)
-      const income = calcIncome(calculator.productList, sellType)
-
-      costPH = cost * consumePH
-      incomePH = income * gainPH * sellTaxFactor
+      costPH = calcCost(calculator, buyType) * consumePH
+      incomePH = calcIncome(calculator, sellType) * gainPH * sellTaxFactor
     }
 
     // 利润/h = 收入/h − 成本/h
