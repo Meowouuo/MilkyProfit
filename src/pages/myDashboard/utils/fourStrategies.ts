@@ -161,11 +161,52 @@ function calcIncome(products: Product[], priceType: PriceType): number {
  * @returns 四种策略的结果数组（顺序：左买左卖 → 左买右卖 → 右买右卖 → 右买左卖）
  */
 export function calculateFourStrategies(calculator: Calculator): StrategyResult[] {
-  // 获取原料列表和产物列表（使用原始数据，不经过 handlePrice）
-  const ingredientList = calculator.ingredientList
-  const productList = calculator.productList
+  // 检测是否为 WorkflowCalculator（多步动作）
+  const isWorkflow = (calculator as any).className === "WorkflowCalculator"
 
-  // 从 calculator 读取不变参数
+  let ingredientList: Ingredient[]
+  let productList: Product[]
+
+  if (isWorkflow) {
+    const wf = calculator as any
+
+    // 从第一个子计算器提取原始原料列表，按工作流倍率缩放
+    const firstCal = wf.calculatorList[0]
+    const firstMultiplier = wf.workMultiplier.flat()[0]
+    const rawIngredientList: Ingredient[] = Array.isArray(firstCal)
+      ? firstCal[0].ingredientList
+      : firstCal.ingredientList
+    ingredientList = rawIngredientList.map(item => ({
+      ...item,
+      count: item.count * firstMultiplier
+    }))
+
+    // 从最后一个子计算器提取原始产物列表，按工作流倍率缩放
+    const lastCal = wf.calculatorList[wf.calculatorList.length - 1]
+    const lastMultiplierArr = wf.workMultiplier[wf.workMultiplier.length - 1]
+    const lastMultipliers: number[] = Array.isArray(lastMultiplierArr) ? lastMultiplierArr : [lastMultiplierArr]
+
+    if (Array.isArray(lastCal)) {
+      // 最后阶段为数组时（多个产物分支），合并所有产物列表
+      productList = lastCal.flatMap((c: Calculator, i: number) => {
+        return (c as any).productList.map((item: Product) => ({
+          ...item,
+          count: item.count * lastMultipliers[i]
+        }))
+      })
+    } else {
+      productList = (lastCal as Calculator).productList.map((item: Product) => ({
+        ...item,
+        count: item.count * lastMultipliers[0]
+      }))
+    }
+  } else {
+    // 单步动作：直接使用 Calculator 的 ingredientList / productList
+    ingredientList = calculator.ingredientList
+    productList = calculator.productList
+  }
+
+  // 从 calculator 读取不变参数（WorkflowCalculator 继承自基类，值正确）
   const actionsPH = calculator.actionsPH
   const consumePH = calculator.consumePH
   const gainPH = calculator.gainPH
