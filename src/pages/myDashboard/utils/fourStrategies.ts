@@ -11,17 +11,17 @@
  *   - 右买右卖：买 BID / 卖 BID
  *   - 右买左卖：买 BID / 卖 ASK
  *
- * 定价逻辑（与 Calculator.handlePrice 完全一致）：
+ * 定价逻辑：
  *   每个原料/产物的价格由以下优先级决定：
  *   1. immutable 配置 → 强制使用 priceConfig.price（多步中间步骤，价格恒为 0）
  *   2. 手动价格（getManualPriceOf）→ 用户自定义价格优先
- *   3. item.marketPrice（Calculator 构造时已正确设置）→ 市场价 / 炼金费 / 特殊定价
+ *   3. COIN_HRID（炼金费）→ 使用 Calculator 构造时的 marketPrice，不查市场价
+ *   4. 普通物品 → getPriceOf(hrid, level, ASK, BID) 按策略方向查价
  *
- * 为什么不用 getItemPrice() / getPriceOf() 重新查价？
- *   Calculator 构造时，炼金动作的硬币成本（COIN_HRID）的 marketPrice
+ * 为什么 COIN_HRID 不用 getPriceOf() 查价？
+ *   Calculator 构造时，炼金动作的 COIN_HRID 原料 marketPrice
  *   被设为 Math.max(sellPrice/5, 50)（即炼金费），而非市场硬币价格（恒为 1）。
- *   如果重新查价，会把这个特殊定价覆盖为 1，导致成本严重低估、利润虚高。
- *   因此本文件完全复用 item.marketPrice，不自行查市场价。
+ *   如果查市场价，会把炼金费覆盖为 1，导致成本严重低估、利润虚高。
  *
  * 与原始 Calculator 的 "左买右卖" 结果可验算：
  *   当原始 Calculator 的 buyStatus=ASK, sellStatus=BID 时，
@@ -32,9 +32,10 @@
 
 import type { Product } from "@/calculator"
 import type Calculator from "@/calculator"
+import { getPriceOf } from "@/common/apis/game"
 import { getManualPriceOf } from "@/common/apis/price"
 import * as Format from "@/common/utils/format"
-import { COIN_HRID } from "@/pinia/stores/game"
+import { COIN_HRID, PriceStatus } from "@/pinia/stores/game"
 
 // =============================================
 // #region 类型定义
@@ -120,32 +121,27 @@ const MAX_PROFIT_RATE = 999
 // #endregion
 
 // =============================================
-// #region 价格获取 — 与 Calculator.handlePrice 完全一致
+// #region 价格获取
 // =============================================
 
 /**
- * 获取单个原料/产物在指定策略下的单价
+ * 获取原料在指定买入策略下的单价
  *
- * 定价优先级（与 Calculator.handlePrice 完全一致）：
- *   1. immutable 配置 → 强制使用 priceConfig.price（多步中间步骤，价格恒为 0）
- *   2. 手动价格（getManualPriceOf）→ 用户自定义价格优先
- *   3. item.marketPrice（Calculator 构造时已正确设置）→ 市场价 / 炼金费 / 特殊定价
+ * 定价优先级：
+ *   1. immutable 配置 → 强制使用 priceConfig.price（多步中间步骤恒为 0）
+ *   2. 手动价格（getManualPriceOf）→ 用户自定义买价优先
+ *   3. COIN_HRID（炼金费）→ 使用 item.marketPrice（Calculator 构造时已正确设置，不查市场）
+ *   4. 普通物品 → getPriceOf(hrid, level, ASK, BID).ask 或 .bid（按策略方向）
  *
- * 为什么不用 getPriceOf() 重新查价？
- *   Calculator 构造时，炼金动作的 COIN_HRID 原料 marketPrice
- *   被设为 Math.max(sellPrice/5, 50)（即炼金费），而非市场硬币价格（恒为 1）。
- *   如果重新查价，会把炼金费覆盖为 1，导致成本严重低估、利润虚高。
- *   因此本函数完全复用 item.marketPrice，不自行查市场价。
- *
- * @param item        原料或产物对象（含 marketPrice 字段）
- * @param priceConfig 对应的价格配置（含 immutable 标志）
- * @param manualType  手动价格查询方向（"ask" 查买入手工价，"bid" 查卖出手工价）
- * @returns 单价（可能是 0，表示内部流转不重复计价）
+ * @param item        原料对象
+ * @param priceConfig 对应的价格配置
+ * @param buyType     买入价格方向（"ask" 取 ASK 价，"bid" 取 BID 价）
+ * @returns 单价
  */
-function getPriceFromItem(
+function getIngredientPrice(
   item: { hrid: string, level?: number, marketPrice: number },
   priceConfig: { immutable?: boolean, price?: number } | undefined,
-  manualType: "ask" | "bid"
+  buyType: PriceType
 ): number {
   // 1. immutable → 强制使用 priceConfig.price（多步中间步骤恒为 0）
   if (priceConfig?.immutable) {
@@ -153,14 +149,59 @@ function getPriceFromItem(
   }
 
   // 2. 手动价格优先
-  const manual = getManualPriceOf(item.hrid, item.level ?? 0)?.[manualType]
+  const manual = getManualPriceOf(item.hrid, item.level ?? 0)?.ask
   if (manual?.manual && manual.manualPrice != null) {
     return manual.manualPrice
   }
 
-  // 3. 使用 Calculator 构造时已正确设置的 marketPrice
-  //    （普通物品 = 市场价，炼金硬币 = 炼金费，特殊物品 = 特殊定价）
-  return item.marketPrice
+  // 3. 炼金硬币 → 使用 Calculator 构造时的 marketPrice（炼金费 sellPrice/5）
+  if (item.hrid === COIN_HRID) {
+    return item.marketPrice
+  }
+
+  // 4. 普通物品 → 按策略方向重新查市场价
+  const raw = getPriceOf(item.hrid, item.level ?? 0, PriceStatus.ASK, PriceStatus.BID)
+  return buyType === "ask" ? raw.ask : raw.bid
+}
+
+/**
+ * 获取产物在指定卖出策略下的单价
+ *
+ * 定价优先级：
+ *   1. immutable 配置 → 强制使用 priceConfig.price（多步中间步骤恒为 0）
+ *   2. 手动价格（getManualPriceOf）→ 用户自定义卖价优先
+ *   3. COIN_HRID → 使用 item.marketPrice（特殊定价）
+ *   4. 普通物品 → getPriceOf(hrid, level, ASK, BID).ask 或 .bid（按策略方向）
+ *
+ * @param item        产物对象
+ * @param priceConfig 对应的价格配置
+ * @param sellType    卖出价格方向（"ask" 取 ASK 价，"bid" 取 BID 价）
+ * @returns 单价
+ */
+function getProductPrice(
+  item: { hrid: string, level?: number, marketPrice: number },
+  priceConfig: { immutable?: boolean, price?: number } | undefined,
+  sellType: PriceType
+): number {
+  // 1. immutable → 强制使用 priceConfig.price（多步中间步骤恒为 0）
+  if (priceConfig?.immutable) {
+    return priceConfig.price ?? 0
+  }
+
+  // 2. 手动价格优先
+  const manual = getManualPriceOf(item.hrid, item.level ?? 0)?.bid
+  if (manual?.manual && manual.manualPrice != null) {
+    return manual.manualPrice
+  }
+
+  // 3. COIN_HRID（炼金返还）→ 使用 Calculator 构造时的 marketPrice
+  if (item.hrid === COIN_HRID) {
+    return item.marketPrice
+  }
+
+  // 4. 普通物品 → 按策略方向重新查市场价
+  const raw = getPriceOf(item.hrid, item.level ?? 0, PriceStatus.ASK, PriceStatus.BID)
+  return sellType === "ask" ? raw.ask : raw.bid
 }
 
 // #endregion
@@ -170,37 +211,30 @@ function getPriceFromItem(
 // =============================================
 
 /**
- * 计算单次动作的原料总成本
+ * 计算单次动作在指定买入策略下的原料总成本
  *
- * 价格获取逻辑与 Calculator.handlePrice 完全一致：
- *   immutable → 手动价 → item.marketPrice（不重新查市场价）。
- * 多步动作的中间步骤原料被标记为 immutable，价格恒为 0（内部流转不重复计价）。
- *
- * @param cal 子计算器（已 run）
+ * @param cal     子计算器（已 run）
+ * @param buyType 买入价格方向（"ask" 或 "bid"）
  * @returns 单次动作的原料总成本
  */
-function calcCost(cal: Calculator): number {
+function calcCost(cal: Calculator, buyType: PriceType): number {
   return cal.ingredientList.reduce((acc, item, idx) => {
-    const price = getPriceFromItem(item, cal.ingredientPriceConfigList[idx], "ask")
+    const price = getIngredientPrice(item, cal.ingredientPriceConfigList[idx], buyType)
     return acc + (price > 0 ? item.count * price : 0)
   }, 0)
 }
 
 /**
- * 计算单次成功行动的产物总收入（税前）
+ * 计算单次成功行动在指定卖出策略下的产物总收入（税前）
  *
- * 价格获取逻辑与 Calculator.handlePrice 完全一致：
- *   immutable → 手动价 → item.marketPrice（不重新查市场价）。
- * 硬币产物不计税（与 Calculator.income 逻辑一致）。
- * 多步动作的中间步骤产物被标记为 immutable，价格恒为 0。
- *
- * @param cal 子计算器（已 run）
+ * @param cal           子计算器（已 run）
+ * @param sellType      卖出价格方向（"ask" 或 "bid"）
  * @param sellTaxFactor 销售税率因子
  * @returns 单次成功行动的产物总收入（税前）
  */
-function calcIncome(cal: Calculator, sellTaxFactor: number): number {
+function calcIncome(cal: Calculator, sellType: PriceType, sellTaxFactor: number): number {
   return cal.productList.reduce((acc, item, idx) => {
-    const price = getPriceFromItem(item as Product, cal.productPriceConfigList[idx], "bid")
+    const price = getProductPrice(item as Product, cal.productPriceConfigList[idx], sellType)
     if (price <= 0) return acc
 
     const rate = (item as Product).rate ?? 1
@@ -263,10 +297,10 @@ export function calculateFourStrategies(calculator: Calculator): StrategyResult[
       if (mult <= 0) continue
 
       // 单次动作的原料成本 × 消耗频率 × 步骤倍率
-      costPH += calcCost(cal) * cal.consumePH * mult
+      costPH += calcCost(cal, buyType) * cal.consumePH * mult
 
       // 单次成功行动的产物收入（税前） × 产出频率 × 步骤倍率 × 税率
-      incomePH += calcIncome(cal, sellTaxFactor) * cal.gainPH * mult * sellTaxFactor
+      incomePH += calcIncome(cal, sellType, sellTaxFactor) * cal.gainPH * mult * sellTaxFactor
     }
 
     // 利润/h = 收入/h − 成本/h

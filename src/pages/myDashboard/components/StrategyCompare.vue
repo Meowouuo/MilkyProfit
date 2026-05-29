@@ -162,6 +162,9 @@ const flatTableData = computed<FlatRow[]>(() => {
   for (const item of strategyList.value) {
     // 找出当前 Calculator 中日利润最高的策略
     const bestPD = Math.max(...item.strategies.map(s => s.profitPD))
+    // 只有最高利润 > 0 且 只有唯一最优时才高亮
+    const bestCount = item.strategies.filter(s => s.profitPD === bestPD).length
+    const hasUniqueBest = bestPD > 0 && bestCount === 1
 
     for (const strategy of item.strategies) {
       rows.push({
@@ -169,7 +172,7 @@ const flatTableData = computed<FlatRow[]>(() => {
         project: item.project,
         strategyName: strategy.name,
         strategy,
-        isBest: strategy.profitPD === bestPD && bestPD > 0,
+        isBest: hasUniqueBest && strategy.profitPD === bestPD,
         calculator: item.calculator
       })
     }
