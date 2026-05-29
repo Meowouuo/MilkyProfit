@@ -123,8 +123,8 @@ function showDetail(calc: Calculator) {
  * @returns [rowspan, colspan]
  */
 function tableSpanMethod({ column, rowIndex }: any): [number, number] {
-  // 物品列、催化剂列和动作列需要合并：每 4 行合并为 1 个单元格
-  if (column.property === "name" || column.property === "project" || column.property === "catalyst") {
+  // 物品图标列、物品列、催化剂列和动作列需要合并：每 4 行合并为 1 个单元格
+  if (column.property === "_icon" || column.property === "name" || column.property === "project" || column.property === "catalyst") {
     if (rowIndex % 4 === 0) {
       return [4, 1] // 合并 4 行
     }
@@ -245,6 +245,7 @@ function tableRowClassName({ row }: { row: FlatRow }) {
       >
         <!-- 物品图标列：每 4 行合并显示，复用原版 ItemIcon -->
         <el-table-column
+          prop="_icon"
           width="54"
           align="center"
           fixed="left"
