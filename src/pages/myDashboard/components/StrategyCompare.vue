@@ -17,6 +17,7 @@
 
 import type { CalculatorWithStrategies, StrategyResult } from "../utils/fourStrategies"
 import type Calculator from "@/calculator"
+import ItemIcon from "@@/components/ItemIcon/index.vue"
 import { ArrowDown, ArrowUp, Search } from "@element-plus/icons-vue"
 import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
 import { calculateAllFourStrategies } from "../utils/fourStrategies"
@@ -122,8 +123,8 @@ function showDetail(calc: Calculator) {
  * @returns [rowspan, colspan]
  */
 function tableSpanMethod({ column, rowIndex }: any): [number, number] {
-  // 物品列和动作列需要合并：每 4 行合并为 1 个单元格
-  if (column.property === "name" || column.property === "project") {
+  // 物品列、催化剂列和动作列需要合并：每 4 行合并为 1 个单元格
+  if (column.property === "name" || column.property === "project" || column.property === "catalyst") {
     if (rowIndex % 4 === 0) {
       return [4, 1] // 合并 4 行
     }
@@ -147,6 +148,8 @@ interface FlatRow {
   name: string
   /** 动作类型 */
   project: string
+  /** 炼金催化剂 hrid（如 catalyst_of_transmutation），非炼金动作为 undefined */
+  catalyst?: string
   /** 策略名称 */
   strategyName: string
   /** 策略计算结果 */
@@ -166,10 +169,15 @@ const flatTableData = computed<FlatRow[]>(() => {
     const bestCount = item.strategies.filter(s => s.profitPD === bestPD).length
     const hasUniqueBest = bestPD > 0 && bestCount === 1
 
+    // 炼金类 Calculator 暴露 catalyst getter（如 TransmuteCalculator.catalyst）
+    // 多步 WorkflowCalculator 代理到最后一个子计算器
+    const catalyst = (item.calculator as any).catalyst
+
     for (const strategy of item.strategies) {
       rows.push({
         name: item.name,
         project: item.project,
+        catalyst,
         strategyName: strategy.name,
         strategy,
         isBest: hasUniqueBest && strategy.profitPD === bestPD,
@@ -242,6 +250,17 @@ function tableRowClassName({ row }: { row: FlatRow }) {
           width="140"
           fixed="left"
         />
+
+        <!-- 催化剂图标列（炼金动作）：每 4 行合并显示 -->
+        <el-table-column
+          prop="catalyst"
+          width="54"
+          align="center"
+        >
+          <template #default="{ row }">
+            <ItemIcon v-if="row.catalyst" :hrid="`/items/${row.catalyst}`" />
+          </template>
+        </el-table-column>
 
         <!-- 动作列：每 4 行合并显示 -->
         <el-table-column
