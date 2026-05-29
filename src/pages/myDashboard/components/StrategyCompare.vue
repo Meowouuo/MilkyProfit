@@ -243,12 +243,22 @@ function tableRowClassName({ row }: { row: FlatRow }) {
         stripe
         size="small"
       >
+        <!-- 物品图标列：每 4 行合并显示，复用原版 ItemIcon -->
+        <el-table-column
+          width="54"
+          align="center"
+          fixed="left"
+        >
+          <template #default="{ row }">
+            <ItemIcon :hrid="row.calculator.hrid" />
+          </template>
+        </el-table-column>
+
         <!-- 物品列：每 4 行合并显示 -->
         <el-table-column
           prop="name"
           :label="t('物品')"
           width="140"
-          fixed="left"
         />
 
         <!-- 催化剂图标列（炼金动作）：每 4 行合并显示 -->
