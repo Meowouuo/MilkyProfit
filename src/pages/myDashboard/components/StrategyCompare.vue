@@ -21,7 +21,7 @@ import ItemIcon from "@@/components/ItemIcon/index.vue"
 import { ArrowDown, ArrowUp, Search } from "@element-plus/icons-vue"
 import { WorkflowCalculator } from "@/calculator/workflow"
 import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
-import { calculateAllFourStrategies } from "../utils/fourStrategies"
+import { calculateAllFourStrategies, getIngredientPrice, getProductPrice } from "../utils/fourStrategies"
 
 // =============================================
 // #region Props 定义
@@ -103,9 +103,10 @@ const currentDetailRow = ref<Calculator>()
 /**
  * 对单个 Calculator 实例，按指定买卖方向重新填入价格缓存，并重新 run()
  *
- * Calculator.ingredientListWithPrice 和 productListWithPrice 本身是硬编码 ask/bid 的，
- * 因此需要直接调用 handlePrice() 用正确的 buyType/sellType 重写缓存，
- * 再调用 run() 让 result（costPH/incomePH 等）也对应新方向。
+ * 关键：handlePrice() 中 type 参数仅影响手动价格查找，市场价始终取
+ * item.marketPrice。因此必须在调用 handlePrice 前，将每个 item.marketPrice
+ * 覆盖为正确的 ask/bid 方向价格（复用 fourStrategies 中的 getIngredientPrice
+ * / getProductPrice，确保与策略利润计算逻辑一致）。
  *
  * @param calc      Calculator 实例
  * @param buyType   原料定价方向：ask = 左价（ASK），bid = 右价（BID）
@@ -114,20 +115,34 @@ const currentDetailRow = ref<Calculator>()
 function applyStrategyPriceToCalc(calc: Calculator, buyType: PriceType, sellType: PriceType) {
   const c = calc as any
 
-  // 1. 重建 ingredientListWithPrice（按策略 buyType 取价）
-  const ingredientList = calc.ingredientList.map(item => ({
-    ...item,
-    countPH: item.count * calc.consumePH,
-    counterCountPH: item.counterCount ? item.counterCount * calc.consumePH : undefined
-  }))
+  // 1. 重建 ingredientListWithPrice（先覆盖 marketPrice 再调 handlePrice）
+  //    关键：handlePrice 中 type 仅影响手动价格，市场价取 item.marketPrice
+  //    因此必须先用 getIngredientPrice 覆盖 marketPrice 为正确的 ask/bid 价
+  const ingredientList = calc.ingredientList.map((item, i) => {
+    const config = calc.ingredientPriceConfigList[i]
+    const price = getIngredientPrice(item, config, buyType)
+    return {
+      ...item,
+      marketPrice: price,
+      price,
+      countPH: item.count * calc.consumePH,
+      counterCountPH: item.counterCount ? item.counterCount * calc.consumePH : undefined
+    }
+  })
   c._ingredientListWithPrice = calc.handlePrice(ingredientList, calc.ingredientPriceConfigList, buyType)
 
-  // 2. 重建 productListWithPrice（按策略 sellType 取价）
-  const productList = calc.productList.map(item => ({
-    ...item,
-    countPH: item.count * calc.gainPH * ((item as any).rate || 1),
-    counterCountPH: item.counterCount ? item.counterCount * calc.gainPH * ((item as any).rate || 1) : undefined
-  }))
+  // 2. 重建 productListWithPrice（先覆盖 marketPrice 再调 handlePrice）
+  const productList = calc.productList.map((item, i) => {
+    const config = calc.productPriceConfigList[i]
+    const price = getProductPrice(item, config, sellType)
+    return {
+      ...item,
+      marketPrice: price,
+      price,
+      countPH: item.count * calc.gainPH * ((item as any).rate || 1),
+      counterCountPH: item.counterCount ? item.counterCount * calc.gainPH * ((item as any).rate || 1) : undefined
+    }
+  })
   c._productListWithPrice = calc.handlePrice(productList, calc.productPriceConfigList, sellType)
 
   // 3. 重新 run()，确保 result.costPH / incomePH 等字段与新价格一致

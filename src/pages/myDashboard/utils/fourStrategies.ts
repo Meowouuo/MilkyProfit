@@ -138,7 +138,7 @@ const MAX_PROFIT_RATE = 999
  * @param buyType     买入价格方向（"ask" 取 ASK 价，"bid" 取 BID 价）
  * @returns 单价
  */
-function getIngredientPrice(
+export function getIngredientPrice(
   item: { hrid: string, level?: number, marketPrice: number },
   priceConfig: { immutable?: boolean, price?: number } | undefined,
   buyType: PriceType
@@ -178,7 +178,7 @@ function getIngredientPrice(
  * @param sellType    卖出价格方向（"ask" 取 ASK 价，"bid" 取 BID 价）
  * @returns 单价
  */
-function getProductPrice(
+export function getProductPrice(
   item: { hrid: string, level?: number, marketPrice: number },
   priceConfig: { immutable?: boolean, price?: number } | undefined,
   sellType: PriceType
