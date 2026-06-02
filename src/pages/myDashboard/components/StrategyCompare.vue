@@ -21,7 +21,6 @@ import ItemIcon from "@@/components/ItemIcon/index.vue"
 import { ArrowDown, ArrowUp, Search } from "@element-plus/icons-vue"
 import { WorkflowCalculator } from "@/calculator/workflow"
 import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
-import { PriceStatus, useGameStore } from "@/pinia/stores/game"
 import { calculateAllFourStrategies } from "../utils/fourStrategies"
 
 // =============================================
@@ -95,9 +94,6 @@ function toggleExpand() {
 // #region 详情弹窗
 // =============================================
 
-/** 游戏全局 store（用于临时切换买卖策略方向） */
-const gameStore = useGameStore()
-
 /** 详情弹窗可见性 */
 const detailVisible = ref(false)
 
@@ -105,74 +101,120 @@ const detailVisible = ref(false)
 const currentDetailRow = ref<Calculator>()
 
 /**
- * 清除 Calculator 及其子计算器的价格缓存
- * 使下次访问 ingredientListWithPrice / productListWithPrice 时按新的 buyStatus/sellStatus 重算
- * @param calc 待清除缓存的 Calculator 实例
+ * 对单个 Calculator 实例，按指定买卖方向重新填入价格缓存，并重新 run()
+ *
+ * Calculator.ingredientListWithPrice 和 productListWithPrice 本身是硬编码 ask/bid 的，
+ * 因此需要直接调用 handlePrice() 用正确的 buyType/sellType 重写缓存，
+ * 再调用 run() 让 result（costPH/incomePH 等）也对应新方向。
+ *
+ * @param calc      Calculator 实例
+ * @param buyType   原料定价方向：ask = 左价（ASK），bid = 右价（BID）
+ * @param sellType  产物定价方向：ask = 左价（ASK），bid = 右价（BID）
+ */
+function applyStrategyPriceToCalc(calc: Calculator, buyType: PriceType, sellType: PriceType) {
+  const c = calc as any
+
+  // 1. 重建 ingredientListWithPrice（按策略 buyType 取价）
+  const ingredientList = calc.ingredientList.map(item => ({
+    ...item,
+    countPH: item.count * calc.consumePH,
+    counterCountPH: item.counterCount ? item.counterCount * calc.consumePH : undefined
+  }))
+  c._ingredientListWithPrice = calc.handlePrice(ingredientList, calc.ingredientPriceConfigList, buyType)
+
+  // 2. 重建 productListWithPrice（按策略 sellType 取价）
+  const productList = calc.productList.map(item => ({
+    ...item,
+    countPH: item.count * calc.gainPH * ((item as any).rate || 1),
+    counterCountPH: item.counterCount ? item.counterCount * calc.gainPH * ((item as any).rate || 1) : undefined
+  }))
+  c._productListWithPrice = calc.handlePrice(productList, calc.productPriceConfigList, sellType)
+
+  // 3. 重新 run()，确保 result.costPH / incomePH 等字段与新价格一致
+  calc.run()
+}
+
+/**
+ * 对 Calculator（及 WorkflowCalculator 的子链）按策略方向重新计算价格缓存
+ *
+ * @param calc      Calculator 实例（可能是 WorkflowCalculator）
+ * @param buyType   原料定价方向
+ * @param sellType  产物定价方向
+ */
+function applyStrategyPrice(calc: Calculator, buyType: PriceType, sellType: PriceType) {
+  if (calc instanceof WorkflowCalculator) {
+    // 多步动作：先对每个子计算器重算，再对 WorkflowCalculator 本体重算
+    const subCalcs: Calculator[] = (calc as any).calculatorList.flat()
+    for (const sub of subCalcs) {
+      applyStrategyPriceToCalc(sub, buyType, sellType)
+    }
+    // WorkflowCalculator 通过 _ingredientPreprocess / _productPreprocess 缓存子计算器的聚合结果，
+    // 子计算器价格已变，必须清除这两个缓存，让它们重新从子计算器聚合
+    const wf = calc as any
+    wf._ingredientPreprocess = undefined
+    wf._productPreprocess = undefined
+    wf._resultList = undefined
+    wf._workMultiplier = undefined
+    calc.run()
+  } else {
+    applyStrategyPriceToCalc(calc, buyType, sellType)
+  }
+}
+
+/**
+ * 清除 Calculator 的价格缓存（恢复为默认的 ask/bid 硬编码状态）
+ *
+ * @param calc Calculator 实例
  */
 function clearPriceCache(calc: Calculator) {
   // 清除当前 Calculator 本身的价格缓存
   ;(calc as any)._ingredientListWithPrice = undefined
   ;(calc as any)._productListWithPrice = undefined
 
-  // 若为多步 WorkflowCalculator，还需清除每个子计算器的缓存
+  // 若为多步 WorkflowCalculator，还需清除每个子计算器和聚合缓存
   if (calc instanceof WorkflowCalculator) {
+    const wf = calc as any
+    wf._ingredientPreprocess = undefined
+    wf._productPreprocess = undefined
+    wf._resultList = undefined
+    wf._workMultiplier = undefined
     const subCalcs: Calculator[] = (calc as any).calculatorList.flat()
     for (const sub of subCalcs) {
       ;(sub as any)._ingredientListWithPrice = undefined
       ;(sub as any)._productListWithPrice = undefined
     }
+    // 重新 run 以恢复默认 result
+    for (const sub of subCalcs) sub.run()
+    calc.run()
+  } else {
+    calc.run()
   }
 }
 
 /**
- * PriceType（"ask"/"bid"）→ PriceStatus 枚举的映射
- * ask = 左价（ASK），bid = 右价（BID）
- */
-function toPriceStatus(type: PriceType): PriceStatus {
-  return type === "ask" ? PriceStatus.ASK : PriceStatus.BID
-}
-
-/**
  * 打开详情弹窗
- * 打开前临时将全局 buyStatus/sellStatus 切换为该策略的方向，
- * 并清除 Calculator 价格缓存，确保 ActionDetail 展示当前策略对应的价格。
- * 弹窗关闭后通过 watch 恢复原始买卖状态。
+ *
+ * 打开前按当前行的策略 buyType/sellType，直接重写 Calculator 的
+ * ingredientListWithPrice / productListWithPrice 缓存并重新 run()，
+ * 使 ActionDetail 展示当前策略对应的原料价格与产物价格。
+ * 弹窗关闭后通过 watch 清除缓存，恢复默认状态，避免污染排行榜数据。
  *
  * @param row 当前行的扁平数据（包含 calculator 实例和策略买卖方向）
  */
 function showDetail(row: FlatRow) {
-  // 记录打开弹窗前用户设置的全局买卖状态，以便弹窗关闭后恢复
-  prevBuyStatus.value = gameStore.buyStatus
-  prevSellStatus.value = gameStore.sellStatus
-
-  // 临时切换为该策略的买卖方向
-  gameStore.buyStatus = toPriceStatus(row.strategy.buyType)
-  gameStore.sellStatus = toPriceStatus(row.strategy.sellType)
-
-  // 清除价格缓存，让 ActionDetail 重新按新方向取价
-  clearPriceCache(row.calculator)
-
+  // 按该策略的买卖方向重写价格缓存
+  applyStrategyPrice(row.calculator, row.strategy.buyType, row.strategy.sellType)
   currentDetailRow.value = row.calculator
   detailVisible.value = true
 }
 
-/** 弹窗打开前记录的原始买入状态（用于关闭后恢复） */
-const prevBuyStatus = ref<PriceStatus>(PriceStatus.ASK)
-/** 弹窗打开前记录的原始卖出状态（用于关闭后恢复） */
-const prevSellStatus = ref<PriceStatus>(PriceStatus.BID)
-
 /**
  * 监听弹窗关闭事件
- * 弹窗关闭后恢复全局买卖状态，并再次清除缓存，
- * 确保四向策略表格数据不受临时状态污染。
+ * 弹窗关闭后清除价格缓存，让 Calculator 恢复默认的 ask/bid 状态，
+ * 避免四向策略表格数据受污染。
  */
 watch(detailVisible, (visible) => {
   if (!visible && currentDetailRow.value) {
-    // 恢复用户原有的全局买卖状态
-    gameStore.buyStatus = prevBuyStatus.value
-    gameStore.sellStatus = prevSellStatus.value
-
-    // 清除缓存，让表格数据也按原状态刷新
     clearPriceCache(currentDetailRow.value)
   }
 })
