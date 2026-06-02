@@ -15,11 +15,13 @@
  * 最高利润策略用绿色高亮，方便快速识别最优方案。
  */
 
-import type { CalculatorWithStrategies, StrategyResult } from "../utils/fourStrategies"
+import type { CalculatorWithStrategies, PriceType, StrategyResult } from "../utils/fourStrategies"
 import type Calculator from "@/calculator"
 import ItemIcon from "@@/components/ItemIcon/index.vue"
 import { ArrowDown, ArrowUp, Search } from "@element-plus/icons-vue"
+import { WorkflowCalculator } from "@/calculator/workflow"
 import ActionDetail from "@/pages/dashboard/components/ActionDetail.vue"
+import { PriceStatus, useGameStore } from "@/pinia/stores/game"
 import { calculateAllFourStrategies } from "../utils/fourStrategies"
 
 // =============================================
@@ -93,6 +95,9 @@ function toggleExpand() {
 // #region 详情弹窗
 // =============================================
 
+/** 游戏全局 store（用于临时切换买卖策略方向） */
+const gameStore = useGameStore()
+
 /** 详情弹窗可见性 */
 const detailVisible = ref(false)
 
@@ -100,13 +105,77 @@ const detailVisible = ref(false)
 const currentDetailRow = ref<Calculator>()
 
 /**
- * 打开详情弹窗
- * @param calc 对应的 Calculator 实例
+ * 清除 Calculator 及其子计算器的价格缓存
+ * 使下次访问 ingredientListWithPrice / productListWithPrice 时按新的 buyStatus/sellStatus 重算
+ * @param calc 待清除缓存的 Calculator 实例
  */
-function showDetail(calc: Calculator) {
-  currentDetailRow.value = calc
+function clearPriceCache(calc: Calculator) {
+  // 清除当前 Calculator 本身的价格缓存
+  ;(calc as any)._ingredientListWithPrice = undefined
+  ;(calc as any)._productListWithPrice = undefined
+
+  // 若为多步 WorkflowCalculator，还需清除每个子计算器的缓存
+  if (calc instanceof WorkflowCalculator) {
+    const subCalcs: Calculator[] = (calc as any).calculatorList.flat()
+    for (const sub of subCalcs) {
+      ;(sub as any)._ingredientListWithPrice = undefined
+      ;(sub as any)._productListWithPrice = undefined
+    }
+  }
+}
+
+/**
+ * PriceType（"ask"/"bid"）→ PriceStatus 枚举的映射
+ * ask = 左价（ASK），bid = 右价（BID）
+ */
+function toPriceStatus(type: PriceType): PriceStatus {
+  return type === "ask" ? PriceStatus.ASK : PriceStatus.BID
+}
+
+/**
+ * 打开详情弹窗
+ * 打开前临时将全局 buyStatus/sellStatus 切换为该策略的方向，
+ * 并清除 Calculator 价格缓存，确保 ActionDetail 展示当前策略对应的价格。
+ * 弹窗关闭后通过 watch 恢复原始买卖状态。
+ *
+ * @param row 当前行的扁平数据（包含 calculator 实例和策略买卖方向）
+ */
+function showDetail(row: FlatRow) {
+  // 记录打开弹窗前用户设置的全局买卖状态，以便弹窗关闭后恢复
+  prevBuyStatus.value = gameStore.buyStatus
+  prevSellStatus.value = gameStore.sellStatus
+
+  // 临时切换为该策略的买卖方向
+  gameStore.buyStatus = toPriceStatus(row.strategy.buyType)
+  gameStore.sellStatus = toPriceStatus(row.strategy.sellType)
+
+  // 清除价格缓存，让 ActionDetail 重新按新方向取价
+  clearPriceCache(row.calculator)
+
+  currentDetailRow.value = row.calculator
   detailVisible.value = true
 }
+
+/** 弹窗打开前记录的原始买入状态（用于关闭后恢复） */
+const prevBuyStatus = ref<PriceStatus>(PriceStatus.ASK)
+/** 弹窗打开前记录的原始卖出状态（用于关闭后恢复） */
+const prevSellStatus = ref<PriceStatus>(PriceStatus.BID)
+
+/**
+ * 监听弹窗关闭事件
+ * 弹窗关闭后恢复全局买卖状态，并再次清除缓存，
+ * 确保四向策略表格数据不受临时状态污染。
+ */
+watch(detailVisible, (visible) => {
+  if (!visible && currentDetailRow.value) {
+    // 恢复用户原有的全局买卖状态
+    gameStore.buyStatus = prevBuyStatus.value
+    gameStore.sellStatus = prevSellStatus.value
+
+    // 清除缓存，让表格数据也按原状态刷新
+    clearPriceCache(currentDetailRow.value)
+  }
+})
 
 // #endregion
 
@@ -349,7 +418,7 @@ function tableRowClassName({ row }: { row: FlatRow }) {
               type="primary"
               :icon="Search"
               :underline="false"
-              @click="showDetail(row.calculator)"
+              @click="showDetail(row)"
             >
               {{ t('详情') }}
             </el-link>
