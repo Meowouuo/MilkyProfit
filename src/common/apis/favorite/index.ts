@@ -3,13 +3,15 @@ import type Calculator from "@/calculator"
 import { calculatorConstructable, getCalculatorInstance, getStorageCalculatorItem } from "@/calculator/utils"
 import { getEquipmentTypeOf } from "@/common/utils/game"
 import { useFavoriteStoreOutside } from "@/pinia/stores/favorite"
+import { handleVolume1hSearch } from "../utils"
 /** 查 */
 export async function getFavoriteDataApi(params: RequestData) {
   await new Promise(resolve => setTimeout(resolve, 300))
   const sellTaxFactor = params.includeTax === false ? 1 : 0.98
+  const crossStepBalance = params.crossStepBalance === true
   let profitList: Calculator[] = []
   try {
-    profitList = calcProfit(sellTaxFactor)
+    profitList = calcProfit(sellTaxFactor, crossStepBalance)
   } catch (e: any) {
     console.error(e)
   }
@@ -20,18 +22,19 @@ export async function getFavoriteDataApi(params: RequestData) {
   params.banEquipment && (profitList = profitList.filter(item => !item.isEquipment))
   // 排除护符（charm）
   params.banCharm && (profitList = profitList.filter(item => !item.item || getEquipmentTypeOf(item.item) !== "charm"))
+  profitList = handleVolume1hSearch(profitList, params)
   // 分页
   return { list: profitList.slice((params.currentPage - 1) * params.size, params.currentPage * params.size), total: profitList.length }
 }
 
-function calcProfit(sellTaxFactor: number) {
+function calcProfit(sellTaxFactor: number, crossStepBalance: boolean) {
   // 所有物品列表
   const list = useFavoriteStoreOutside().list
   const profitList: Calculator[] = []
   list.filter(item => calculatorConstructable(item.className!)).forEach((item) => {
     try {
       // workflow 的子计算器在构造时就需要正确的税率，因此通过参数透传
-      const instance = getCalculatorInstance(item, sellTaxFactor)
+      const instance = getCalculatorInstance(item, sellTaxFactor, crossStepBalance)
       instance.setSellTaxFactor(sellTaxFactor)
       instance.available && profitList.push(instance.run())
     } catch (e) {
